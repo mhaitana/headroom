@@ -1345,6 +1345,7 @@ class ContentRouter(Transform):
         Returns:
             RouterCompressionResult with compressed content and routing metadata.
         """
+        context = context or ""
         debug_enabled = logger.isEnabledFor(logging.DEBUG)
         request_debug = (
             {
