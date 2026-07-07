@@ -531,64 +531,59 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
 
     @app.post("/v1/chat/completions")
     async def openai_chat(request: Request):
-        return await proxy.handle_openai_chat(request)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only. Use /v1/messages."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.post("/v1/responses")
     async def openai_responses(request: Request):
-        return await proxy.handle_openai_responses(request)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.post("/v1/codex/responses")
     async def openai_v1_codex_responses(request: Request):
-        return await proxy.handle_openai_responses(request)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.post("/backend-api/responses")
     async def openai_codex_responses(request: Request):
-        return await proxy.handle_openai_responses(request)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.post("/backend-api/codex/responses")
     async def openai_codex_nested_responses(request: Request):
-        return await proxy.handle_openai_responses(request)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.websocket("/v1/responses")
     async def openai_responses_ws(websocket: WebSocket):
-        await proxy.handle_openai_responses_ws(websocket)
+        await websocket.close(code=4004, reason="Bedrock-only proxy: /v1/responses not supported")
 
     @app.websocket("/v1/codex/responses")
     async def openai_v1_codex_responses_ws(websocket: WebSocket):
-        await proxy.handle_openai_responses_ws(websocket)
+        await websocket.close(code=4004, reason="Bedrock-only proxy: /v1/codex/responses not supported")
 
     @app.api_route("/v1/responses/{sub_path:path}", methods=["GET", "POST", "DELETE"])
     async def openai_responses_sub(request: Request, sub_path: str):
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
-
-        if is_chatgpt_auth:
-            url = f"https://chatgpt.com/backend-api/codex/responses/{sub_path}"
-        else:
-            url = f"{_api_target(proxy, 'openai')}/v1/responses/{sub_path}"
-
-        if request.url.query:
-            url = f"{url}?{request.url.query}"
-
-        body = await request.body()
-        try:
-            assert proxy.http_client is not None
-            resp = await proxy.http_client.request(
-                request.method,
-                url,
-                headers=headers,
-                content=body,
-                timeout=120.0,
-            )
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=dict(resp.headers),
-            )
-        except Exception as exc:
-            logger.error("Passthrough /v1/responses/%s failed: %s", sub_path, exc)
-            return Response(content=str(exc), status_code=502)
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only."}',
+            status_code=404,
+            media_type="application/json",
+        )
 
     @app.api_route("/v1/codex/responses/{sub_path:path}", methods=["GET", "POST", "DELETE"])
     async def openai_v1_codex_responses_sub(request: Request, sub_path: str):
@@ -598,55 +593,66 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     async def openai_codex_responses_ws(websocket: WebSocket):
         await proxy.handle_openai_responses_ws(websocket)
 
+    # ---------------------------------------------------------------------------
+    # Non-Bedrock routes — disabled (Bedrock-only proxy)
+    # ---------------------------------------------------------------------------
+
+    def _bedrock_only() -> Response:
+        return Response(
+            content='{"error": "This proxy is configured for AWS Bedrock only. Use /v1/messages."}',
+            status_code=404,
+            media_type="application/json",
+        )
+
     @app.websocket("/backend-api/codex/responses")
     async def openai_codex_nested_responses_ws(websocket: WebSocket):
-        await proxy.handle_openai_responses_ws(websocket)
+        await websocket.close(code=4004, reason="Bedrock-only proxy")
 
     @app.api_route("/backend-api/responses/{sub_path:path}", methods=["GET", "POST", "DELETE"])
     async def openai_codex_responses_sub(request: Request, sub_path: str):
-        return await openai_responses_sub(request, sub_path)
+        return _bedrock_only()
 
     @app.api_route(
         "/backend-api/codex/responses/{sub_path:path}", methods=["GET", "POST", "DELETE"]
     )
     async def openai_codex_nested_responses_sub(request: Request, sub_path: str):
-        return await openai_responses_sub(request, sub_path)
+        return _bedrock_only()
 
     @app.post("/v1/batches")
     async def create_batch(request: Request):
-        return await proxy.handle_batch_create(request)
+        return _bedrock_only()
 
     @app.get("/v1/batches")
     async def list_batches(request: Request):
-        return await proxy.handle_batch_list(request)
+        return _bedrock_only()
 
     @app.get("/v1/batches/{batch_id}")
     async def get_batch(request: Request, batch_id: str):
-        return await proxy.handle_batch_get(request, batch_id)
+        return _bedrock_only()
 
     @app.post("/v1/batches/{batch_id}/cancel")
     async def cancel_batch(request: Request, batch_id: str):
-        return await proxy.handle_batch_cancel(request, batch_id)
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:generateContent")
     async def gemini_generate_content(request: Request, model: str):
-        return await proxy.handle_gemini_generate_content(request, model)
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:streamGenerateContent")
     async def gemini_stream_generate_content(request: Request, model: str):
-        return await proxy.handle_gemini_stream_generate_content(request, model)
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:countTokens")
     async def gemini_count_tokens(request: Request, model: str):
-        return await proxy.handle_gemini_count_tokens(request, model)
+        return _bedrock_only()
 
     @app.post("/v1internal:streamGenerateContent")
     async def google_cloudcode_stream_generate_content(request: Request):
-        return await proxy.handle_google_cloudcode_stream(request)
+        return _bedrock_only()
 
     @app.post("/v1/v1internal:streamGenerateContent")
     async def google_cloudcode_stream_generate_content_v1(request: Request):
-        return await proxy.handle_google_cloudcode_stream(request)
+        return _bedrock_only()
 
     @app.post(
         "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:generateContent"
@@ -659,15 +665,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         publisher: str,
         model: str,
     ):
-        del api_version, project, location
-        if publisher == "google":
-            return await proxy.handle_gemini_generate_content(
-                request,
-                model,
-                _api_target(proxy, "vertex"),
-                "vertex:google",
-            )
-        return await vertex_publisher_passthrough(request, publisher, "generateContent")
+        return _bedrock_only()
 
     @app.post(
         "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamGenerateContent"
@@ -680,15 +678,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         publisher: str,
         model: str,
     ):
-        del api_version, project, location
-        if publisher == "google":
-            return await proxy.handle_gemini_generate_content(
-                request,
-                model,
-                _api_target(proxy, "vertex"),
-                "vertex:google",
-            )
-        return await vertex_publisher_passthrough(request, publisher, "streamGenerateContent")
+        return _bedrock_only()
 
     @app.post(
         "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:countTokens"
@@ -701,15 +691,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         publisher: str,
         model: str,
     ):
-        del api_version, project, location
-        if publisher == "google":
-            return await proxy.handle_gemini_count_tokens(
-                request,
-                model,
-                _api_target(proxy, "vertex"),
-                "vertex:google",
-            )
-        return await vertex_publisher_passthrough(request, publisher, "countTokens")
+        return _bedrock_only()
 
     @app.post(
         "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:rawPredict"
@@ -722,15 +704,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         publisher: str,
         model: str,
     ):
-        del api_version, project
-        if publisher == "anthropic":
-            return await proxy.handle_anthropic_messages(
-                request,
-                _vertex_target_for_location(proxy, location),
-                "vertex:anthropic",
-                model,
-            )
-        return await vertex_publisher_passthrough(request, publisher, "rawPredict")
+        return _bedrock_only()
 
     @app.post(
         "/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict"
@@ -741,14 +715,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         location: str,
         model: str,
     ):
-        del project
-        target = _vertex_target_for_location(proxy, location).rstrip("/") + "/v1"
-        return await proxy.handle_anthropic_messages(
-            request,
-            target,
-            "vertex:anthropic",
-            model,
-        )
+        return _bedrock_only()
 
     @app.post(
         "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamRawPredict"
@@ -761,16 +728,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         publisher: str,
         model: str,
     ):
-        del api_version, project
-        if publisher == "anthropic":
-            return await proxy.handle_anthropic_messages(
-                request,
-                _vertex_target_for_location(proxy, location),
-                "vertex:anthropic",
-                model,
-                True,
-            )
-        return await vertex_publisher_passthrough(request, publisher, "streamRawPredict")
+        return _bedrock_only()
 
     @app.post(
         "/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:streamRawPredict"
@@ -781,209 +739,88 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         location: str,
         model: str,
     ):
-        del project
-        target = _vertex_target_for_location(proxy, location).rstrip("/") + "/v1"
-        return await proxy.handle_anthropic_messages(
-            request,
-            target,
-            "vertex:anthropic",
-            model,
-            True,
-        )
+        return _bedrock_only()
 
     @app.get("/v1/models")
     async def list_models(request: Request):
-        chatgpt_response = await _handle_chatgpt_model_metadata(
-            proxy,
-            request,
-            "/backend-api/models",
-        )
-        if chatgpt_response is not None:
-            return chatgpt_response
-
-        provider_name = proxy.provider_runtime.model_metadata_provider(dict(request.headers))
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, provider_name),
-            "models",
-            provider_name,
-        )
+        # Return a static Bedrock model list
+        return {"object": "list", "data": [{"id": "bedrock", "object": "model"}]}
 
     @app.get("/v1/models/{model_id}")
     async def get_model(request: Request, model_id: str):
-        chatgpt_response = await _handle_chatgpt_model_metadata(
-            proxy,
-            request,
-            f"/backend-api/models/{model_id}",
-        )
-        if chatgpt_response is not None:
-            return chatgpt_response
-
-        provider_name = proxy.provider_runtime.model_metadata_provider(dict(request.headers))
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, provider_name),
-            "models",
-            provider_name,
-        )
+        return {"id": model_id, "object": "model", "provider": "bedrock"}
 
     @app.post("/v1/embeddings")
     async def openai_embeddings(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "embeddings",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.post("/v1/moderations")
     async def openai_moderations(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "moderations",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.post("/v1/images/generations")
     async def openai_images_generations(request: Request):
-        chatgpt_response = await _handle_chatgpt_codex_images(
-            proxy,
-            request,
-            "generations",
-        )
-        if chatgpt_response is not None:
-            return chatgpt_response
-
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "images/generations",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.post("/v1/images/edits")
     async def openai_images_edits(request: Request):
-        chatgpt_response = await _handle_chatgpt_codex_images(
-            proxy,
-            request,
-            "edits",
-        )
-        if chatgpt_response is not None:
-            return chatgpt_response
-
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "images/edits",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.post("/v1/audio/transcriptions")
     async def openai_audio_transcriptions(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "audio/transcriptions",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.post("/v1/audio/speech")
     async def openai_audio_speech(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "openai"),
-            "audio/speech",
-            "openai",
-        )
+        return _bedrock_only()
 
     @app.get("/v1beta/models")
     async def gemini_list_models(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "models",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.get("/v1beta/models/{model_name}")
     async def gemini_get_model(request: Request, model_name: str):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "models",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:embedContent")
     async def gemini_embed_content(request: Request, model: str):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "embedContent",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:batchEmbedContents")
     async def gemini_batch_embed_contents(request: Request, model: str):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "batchEmbedContents",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.post("/v1beta/models/{model}:batchGenerateContent")
     async def gemini_batch_create(request: Request, model: str):
-        return await proxy.handle_google_batch_create(request, model)
+        return _bedrock_only()
 
     @app.get("/v1beta/batches/{batch_name}")
     async def gemini_batch_get(request: Request, batch_name: str):
-        return await proxy.handle_google_batch_results(request, batch_name)
+        return _bedrock_only()
 
     @app.post("/v1beta/batches/{batch_name}:cancel")
     async def gemini_batch_cancel(request: Request, batch_name: str):
-        return await proxy.handle_google_batch_passthrough(request, batch_name)
+        return _bedrock_only()
 
     @app.delete("/v1beta/batches/{batch_name}")
     async def gemini_batch_delete(request: Request, batch_name: str):
-        return await proxy.handle_google_batch_passthrough(request, batch_name)
+        return _bedrock_only()
 
     @app.post("/v1beta/cachedContents")
     async def gemini_create_cached_content(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "cachedContents",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.get("/v1beta/cachedContents")
     async def gemini_list_cached_contents(request: Request):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "cachedContents",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.get("/v1beta/cachedContents/{cache_id}")
     async def gemini_get_cached_content(request: Request, cache_id: str):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "cachedContents",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.delete("/v1beta/cachedContents/{cache_id}")
     async def gemini_delete_cached_content(request: Request, cache_id: str):
-        return await proxy.handle_passthrough(
-            request,
-            _api_target(proxy, "gemini"),
-            "cachedContents",
-            "gemini",
-        )
+        return _bedrock_only()
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
     async def passthrough(request: Request, path: str):

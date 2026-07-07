@@ -1898,7 +1898,14 @@ def _request_is_loopback(request: Request) -> bool:
     payload — serving sensitive sub-blocks (upstream URLs, per-request logs)
     only to loopback callers — rather than 404ing network callers that still
     have a legitimate use for the non-sensitive aggregate fields.
+
+    Also accepts peer IPs in ``ProxyConfig.trusted_peer_cidrs`` — needed when
+    the proxy runs in Docker where the host gateway (e.g. 172.18.0.1) is the
+    actual TCP peer, not 127.0.0.1.  The Host-header loopback check still
+    applies so DNS-rebinding attacks are still blocked.
     """
+    import ipaddress
+
     from headroom.proxy.loopback_guard import is_loopback_host, is_loopback_host_header
 
     client = getattr(request, "client", None)
@@ -1907,7 +1914,35 @@ def _request_is_loopback(request: Request) -> bool:
         host_header = request.headers.get("host")
     except AttributeError:
         host_header = None
-    return is_loopback_host(client_host) and is_loopback_host_header(host_header)
+
+    if not is_loopback_host_header(host_header):
+        return False
+
+    if is_loopback_host(client_host):
+        return True
+
+    # Check trusted peer CIDRs (e.g. Docker bridge range configured via
+    # HEADROOM_TRUSTED_PEER_CIDRS). Read directly from env so this module-level
+    # function doesn't need access to the ProxyConfig closure.
+    if client_host:
+        raw = os.environ.get("HEADROOM_TRUSTED_PEER_CIDRS", "")
+        trusted = [c.strip() for c in raw.split(",") if c.strip()]
+        try:
+            addr = ipaddress.ip_address(client_host)
+            for cidr in trusted:
+                try:
+                    if addr in ipaddress.ip_network(cidr, strict=False):
+                        return True
+                except ValueError:
+                    try:
+                        if addr == ipaddress.ip_address(cidr):
+                            return True
+                    except ValueError:
+                        pass
+        except ValueError:
+            pass
+
+    return False
 
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
@@ -4069,8 +4104,13 @@ def _proxy_config_from_env() -> ProxyConfig:
             min_value=1,
         ),
         vertex_api_url=os.environ.get("VERTEX_TARGET_API_URL"),
-        backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
-        bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
+        backend="bedrock",
+        bedrock_region=(
+            os.environ.get("HEADROOM_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("HEADROOM_REGION")
+            or "us-west-2"
+        ),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
         bedrock_api_url=os.environ.get("BEDROCK_TARGET_API_URL"),
         anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", "openai"),
@@ -4084,6 +4124,11 @@ def _proxy_config_from_env() -> ProxyConfig:
         http2=_get_env_bool("HEADROOM_HTTP2", True),
         periodic_toin_stats_enabled=_get_env_bool("HEADROOM_PERIODIC_TOIN_STATS", True),
         proxy_token=os.environ.get("HEADROOM_PROXY_TOKEN") or None,
+        trusted_peer_cidrs=[
+            c.strip()
+            for c in os.environ.get("HEADROOM_TRUSTED_PEER_CIDRS", "").split(",")
+            if c.strip()
+        ],
         offline=_get_env_bool("HEADROOM_OFFLINE", False),
         mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
         read_maturation=_get_env_bool("HEADROOM_READ_MATURATION", False),
@@ -4664,9 +4709,14 @@ if __name__ == "__main__":
             min_value=1,
         ),
         vertex_api_url=_get_env_str("VERTEX_TARGET_API_URL", args.vertex_api_url),
-        # Backend settings
-        backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
-        bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
+        # Backend settings — hardcoded to Bedrock
+        backend="bedrock",  # type: ignore[arg-type]
+        bedrock_region=(
+            os.environ.get("HEADROOM_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("HEADROOM_REGION")
+            or _get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region)
+        ),
         bedrock_profile=args.bedrock_profile or os.environ.get("AWS_PROFILE"),
         bedrock_api_url=_get_env_str("BEDROCK_TARGET_API_URL", args.bedrock_api_url),
         anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", args.anyllm_provider),
@@ -4737,6 +4787,11 @@ if __name__ == "__main__":
             else None
         ),
         accuracy_guard=os.environ.get("HEADROOM_ACCURACY_GUARD") or None,
+        trusted_peer_cidrs=[
+            c.strip()
+            for c in os.environ.get("HEADROOM_TRUSTED_PEER_CIDRS", "").split(",")
+            if c.strip()
+        ],
     )
 
     # Get worker and concurrency settings

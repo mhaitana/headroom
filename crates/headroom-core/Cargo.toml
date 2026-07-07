@@ -125,7 +125,14 @@ http = "1"
 [target.'cfg(not(windows))'.dependencies]
 fastembed = { version = "5", default-features = false, features = [
     "hf-hub-rustls-tls",
-    "ort-download-binaries-rustls-tls",
+    # Use load-dynamic instead of ort-download-binaries-rustls-tls.
+    # The download-binaries feature hardcodes a cdn.pyke.io fetch at
+    # compile time using rustls with bundled webpki roots — those roots
+    # don't include the corporate Zscaler CA, so the build fails behind
+    # the proxy. With load-dynamic, ort-sys skips the download entirely
+    # and dlopen()s libonnxruntime.so at process startup from the path
+    # set by ORT_DYLIB_PATH (pointed at the onnxruntime pip wheel .so).
+    "ort-load-dynamic",
     "image-models",
 ] }
 

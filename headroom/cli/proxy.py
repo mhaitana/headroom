@@ -1149,9 +1149,16 @@ def proxy(
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
         traffic_learning_agent_type=os.environ.get("HEADROOM_AGENT_TYPE", "unknown"),
         traffic_learning_min_evidence=min_evidence if min_evidence is not None else 5,
-        # Backend (Anthropic direct, Bedrock, LiteLLM, or any-llm)
-        backend=backend,
-        bedrock_region=bedrock_region or region,
+        # Backend — hardcoded to Bedrock; ignore any user-supplied --backend flag
+        backend="bedrock",
+        bedrock_region=(
+            bedrock_region
+            or region
+            or os.environ.get("HEADROOM_BEDROCK_REGION")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("HEADROOM_REGION")
+            or "us-west-2"
+        ),
         bedrock_profile=bedrock_profile,
         # CLI flag > env > unset. Matches the BEDROCK_TARGET_API_URL naming of
         # the sibling *_TARGET_API_URL passthrough overrides.

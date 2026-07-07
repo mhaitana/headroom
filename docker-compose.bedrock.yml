@@ -1,0 +1,108 @@
+# Runs headroom proxy built from local source, routing Claude Code via AWS Bedrock
+# (ap-southeast-2, au. inference profiles) through a corporate proxy environment.
+#
+# REQUIREMENTS
+#   - Docker Desktop with host-networking support (host.docker.internal resolves)
+#   - aws-sso CLI on the host (brew install aws-sso-cli or equivalent)
+#   - Active SSO session for dg-productivity-prod:claude-common
+#   - Corporate TLS proxy at localhost:3128 (Zscaler / Charles / etc.)
+#
+# FIRST-TIME BUILD  (only needed once, or after source changes)
+#   eval "$(aws-sso eval --profile=dg-productivity-prod:claude-common)"
+#   docker compose -f docker-compose.bedrock.yml build
+#
+# DAILY START  (credentials are temporary — repeat when SSO session expires)
+#   eval "$(aws-sso eval --profile=dg-productivity-prod:claude-common)" && \
+#     docker compose -f docker-compose.bedrock.yml up --force-recreate -d
+#
+# STOP
+#   docker compose -f docker-compose.bedrock.yml stop
+#
+# CLEAR PROXY DATA  (reset dashboard / logs / CCR store)
+#   docker compose -f docker-compose.bedrock.yml stop
+#   > ~/.headroom/proxy_savings.json
+#   > ~/.headroom/savings_events.jsonl
+#   > ~/.headroom/ccr_store.db && > ~/.headroom/ccr_store.db-shm && > ~/.headroom/ccr_store.db-wal
+#   > ~/.headroom/logs/proxy.log && > ~/.headroom/logs/proxy.log.1
+#   # then restart with the DAILY START command above
+#
+# USE WITH CLAUDE CODE
+#   # The project settings in /Users/mhaitana/Work/temp/.claude/settings.json already
+#   # set ANTHROPIC_BASE_URL=http://localhost:8787, ANTHROPIC_API_KEY=headroom,
+#   # and CLAUDE_CODE_USE_BEDROCK=0, so just launch Claude Code from that directory:
+#   cd /Users/mhaitana/Work/temp && claude
+#
+# HOW IT WORKS
+#   - AWS credentials are injected as env vars (AWS_ACCESS_KEY_ID / SECRET / TOKEN)
+#     from the host shell — the credential_process in ~/.aws/config uses a macOS-only
+#     binary and cannot run inside the Linux container.
+#   - HEADROOM_REGION=ap-southeast-2 is required; the proxy CLI reads this env var,
+#     NOT AWS_REGION. Without it the region defaults to us-west-2 and all models
+#     resolve to us. inference profiles instead of au.
+#   - amazonaws.com is excluded from the corporate proxy (NO_PROXY) so Bedrock API
+#     calls go direct; everything else (pip, model downloads) routes through the proxy.
+#   - The bedrock extra (boto3 + botocore[crt]) is included in the image build so
+#     LiteLLM can SigV4-sign Bedrock requests.
+
+services:
+  proxy:
+    # Force amd64 so apt resolves x86_64 packages (no ARM cross-compiler).
+    # On Apple Silicon this runs under Rosetta/QEMU — still faster than
+    # fighting the trixie arm64 gcc-14-aarch64-linux-gnu download timeout.
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HEADROOM_EXTRAS: proxy,code,bedrock
+        PYTHON_SLIM_TAG: slim-bookworm
+        HTTP_PROXY: http://http.docker.internal:3128
+        HTTPS_PROXY: http://http.docker.internal:3128
+        http_proxy: http://http.docker.internal:3128
+        https_proxy: http://http.docker.internal:3128
+        NO_PROXY: localhost,127.0.0.1,cdn.pyke.io,pyke.io,huggingface.co,hf.co
+    restart: unless-stopped
+    environment:
+      HOME: /tmp/headroom-home
+      HEADROOM_HOST: 0.0.0.0
+      HTTPS_PROXY: http://host.docker.internal:3128
+      HTTP_PROXY: http://host.docker.internal:3128
+      https_proxy: http://host.docker.internal:3128
+      http_proxy: http://host.docker.internal:3128
+      NO_PROXY: localhost,127.0.0.1,amazonaws.com,.amazonaws.com
+      no_proxy: localhost,127.0.0.1,amazonaws.com,.amazonaws.com
+      HEADROOM_WORKSPACE_DIR: /tmp/headroom-home/.headroom
+      HEADROOM_CONFIG_DIR: /tmp/headroom-home/.headroom/config
+      HEADROOM_BACKEND: bedrock
+      HEADROOM_STORAGE_BACKEND: ${HEADROOM_STORAGE_BACKEND:-file}
+      # The upstream health check probes api.anthropic.com which is irrelevant
+      # for Bedrock deployments (and blocked by the corporate proxy). Skip it.
+      HEADROOM_SKIP_UPSTREAM_CHECK: "1"
+      # Docker bridge + Docker Desktop VM subnet treated as loopback so the dashboard
+      # Recent Requests panel gets per-request data. On macOS, Docker Desktop proxies
+      # host→container connections through 192.168.65.x (its internal VM subnet).
+      HEADROOM_TRUSTED_PEER_CIDRS: "172.18.0.0/16,172.17.0.0/16,192.168.65.0/24"
+      HEADROOM_REGION: "ap-southeast-2"
+      HEADROOM_BEDROCK_REGION: "ap-southeast-2"
+      AWS_REGION: "ap-southeast-2"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+      ANTHROPIC_BASE_URL: "http://localhost:8787"
+      ANTHROPIC_API_KEY: "headroom"
+      ANTHROPIC_MODEL: "opusplan"
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "au.anthropic.claude-sonnet-4-6"
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "au.anthropic.claude-opus-4-8"
+    ports:
+      - "${HEADROOM_PORT:-8787}:${HEADROOM_PORT:-8787}"
+    volumes:
+      - ${HOME}/.headroom:/tmp/headroom-home/.headroom
+      - ${HOME}/.claude:/tmp/headroom-home/.claude
+    command: ["--host", "0.0.0.0", "--port", "${HEADROOM_PORT:-8787}"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

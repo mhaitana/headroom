@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Headroom Bedrock Proxy — thin image layered on top of the published base
+#
+# Pulls the pre-built headroom image from GHCR and overrides only the
+# runtime configuration for AWS Bedrock. No Rust/Python build required.
+#
+# Build:
+#   docker build -f Dockerfile.bedrock -t headroom-bedrock .
+#
+# Run (with IAM instance profile / ECS task role — no explicit creds needed):
+#   docker run -p 8787:8787 \
+#     -e AWS_REGION=us-east-1 \
+#     headroom-bedrock
+#
+# Run (with explicit credentials):
+#   docker run -p 8787:8787 \
+#     -e AWS_REGION=us-east-1 \
+#     -e AWS_ACCESS_KEY_ID=... \
+#     -e AWS_SECRET_ACCESS_KEY=... \
+#     headroom-bedrock
+#
+# Health check:
+#   curl http://localhost:8787/readyz
+# ---------------------------------------------------------------------------
+
+FROM --platform=linux/amd64 ghcr.io/mhaitana/headroom:latest
+
+LABEL org.opencontainers.image.source="https://github.com/mhaitana/headroom" \
+      org.opencontainers.image.description="Headroom compression proxy — AWS Bedrock backend"
+
+# ---------------------------------------------------------------------------
+# Environment — AWS Bedrock placeholders
+# Override these at runtime via -e flags or IAM instance profile / task role.
+# ---------------------------------------------------------------------------
+ENV HEADROOM_HOST="0.0.0.0" \
+    HEADROOM_PORT="8787" \
+    HEADROOM_BACKEND="bedrock" \
+    # AWS region — set to your Bedrock-enabled region.
+    # Can also be provided via AWS_REGION (standard AWS env var).
+    AWS_REGION="us-east-1" \
+    # Credential placeholders — leave unset when using IAM instance profile
+    # or ECS task role (recommended for production).
+    AWS_ACCESS_KEY_ID="" \
+    AWS_SECRET_ACCESS_KEY="" \
+    AWS_SESSION_TOKEN="" \
+    AWS_PROFILE=""
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8787/readyz || exit 1
+
+ENTRYPOINT ["headroom", "proxy"]
+CMD ["--host", "0.0.0.0", "--port", "8787", "--backend", "bedrock"]

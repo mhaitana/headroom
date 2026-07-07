@@ -58,16 +58,6 @@ from .tool_injection import (
     parse_tool_call,
 )
 
-# MCP server is optional (requires mcp package)
-try:
-    from .mcp_server import HeadroomMCPServer, create_ccr_mcp_server
-
-    MCP_SERVER_AVAILABLE = True
-except ImportError:
-    HeadroomMCPServer = None  # type: ignore
-    create_ccr_mcp_server = None  # type: ignore
-    MCP_SERVER_AVAILABLE = False
-
 __all__ = [
     # Tool injection
     "CCR_TOOL_NAME",
@@ -99,8 +89,4 @@ __all__ = [
     "get_batch_context_store",
     "process_batch_results",
     "reset_batch_context_store",
-    # MCP server
-    "HeadroomMCPServer",
-    "create_ccr_mcp_server",
-    "MCP_SERVER_AVAILABLE",
 ]

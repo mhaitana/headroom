@@ -2036,12 +2036,7 @@
 
                 formatTime(ts) {
                     if (!ts) return '-';
-                    const d = new Date(ts);
-                    const now = new Date();
-                    const diff = (now - d) / 1000;
-                    if (diff < 60) return Math.floor(diff) + 's ago';
-                    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-                    return d.toLocaleTimeString();
+                    return new Date(ts).toLocaleTimeString();
                 },
 
                 formatDate(ts) {
@@ -2081,9 +2076,12 @@
 
                 truncateModel(model) {
                     if (!model) return '-';
-                    return model.replace(/^(anthropic\.|openai\.|bedrock\/)/, '')
-                               .replace(/-\d{8}$/, '')
-                               .substring(0, 20);
+                    return model.replace(/^bedrock\/converse\//, '')
+                               .replace(/^bedrock\//, '')
+                               .replace(/^(us|eu|au|apac|global)\.anthropic\./, '')
+                               .replace(/^(anthropic\.|openai\.)/, '')
+                               .replace(/-v\d+:\d+$/, '')
+                               .replace(/-\d{8}$/, '');
                 },
 
                 // --- Agent Usage ---

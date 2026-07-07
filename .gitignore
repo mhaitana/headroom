@@ -253,3 +253,7 @@ uv.lock
 /headroom/_core.*.so
 /headroom/_core.so
 .tokensave
+
+# Certificate files (never commit)
+*.crt
+*.pem

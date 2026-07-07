@@ -97,6 +97,12 @@ class ProxyConfig:
     # Server
     host: str = "127.0.0.1"
     port: int = 8787
+    # Extra peer IPs/CIDRs to treat as loopback for dashboard-only endpoints
+    # (recent_requests, config). Useful when the proxy runs in Docker where
+    # the host gateway (e.g. 172.18.0.1) is the actual peer IP, not 127.0.0.1.
+    # Comma-separated: "172.18.0.0/16" or "172.18.0.1,172.17.0.1".
+    # Env: HEADROOM_TRUSTED_PEER_CIDRS.
+    trusted_peer_cidrs: list[str] = field(default_factory=list)
     anthropic_api_url: str | None = None  # Custom Anthropic API URL override
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override

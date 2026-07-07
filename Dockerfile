@@ -1,148 +1,177 @@
-ARG PYTHON_VERSION=3.13
-ARG UV_VERSION=0.11.18
-ARG DISTROLESS_IMAGE=gcr.io/distroless/python3-debian13
-ARG PYTHON_SITE_PACKAGES=/usr/local/lib/python${PYTHON_VERSION}/site-packages
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Headroom Bedrock Proxy — multi-stage Docker image
+#
+# This is a stripped-down, single-purpose image that runs the Headroom
+# compression proxy hardcoded to AWS Bedrock. It accepts Anthropic-format
+# /v1/messages requests, compresses them, and forwards to Bedrock via
+# LiteLLM + SigV4 (boto3/botocore-crt).
+#
+# Build:
+#   docker build -t headroom-bedrock .
+#
+# Run (with IAM instance profile / ECS task role — no explicit creds needed):
+#   docker run -p 8787:8787 \
+#     -e AWS_REGION=us-east-1 \
+#     headroom-bedrock
+#
+# Run (with explicit credentials):
+#   docker run -p 8787:8787 \
+#     -e AWS_REGION=us-east-1 \
+#     -e AWS_ACCESS_KEY_ID=... \
+#     -e AWS_SECRET_ACCESS_KEY=... \
+#     headroom-bedrock
+#
+# Health check:
+#   curl http://localhost:8787/readyz
+# ---------------------------------------------------------------------------
 
-# ---- Build stage: compile native extensions, build wheel ----
-FROM python:${PYTHON_VERSION}-slim AS builder
+ARG PYTHON_VERSION=3.11
+ARG PYTHON_SLIM_TAG=slim-bookworm
+ARG RUST_VERSION=1.95.0
+# Corporate TLS proxy (Zscaler). Override at build time if not needed:
+#   docker build --build-arg HTTP_PROXY="" --build-arg HTTPS_PROXY="" ...
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY="localhost,127.0.0.1,cdn.pyke.io,pyke.io,huggingface.co,hf.co"
 
-ARG UV_VERSION
+# ---------------------------------------------------------------------------
+# Stage 1: builder
+# Compiles the headroom._core Rust extension via maturin and installs the
+# full proxy + bedrock dependencies into /opt/headroom-venv.
+#
+# Platform: always build as linux/amd64. On Apple Silicon this runs under
+# QEMU/Rosetta. This avoids Debian trixie arm64 pulling gcc-14-aarch64-linux-gnu
+# (the ARM cross-compiler — 17 MB, times out through the corporate proxy).
+# ---------------------------------------------------------------------------
+FROM --platform=linux/amd64 python:${PYTHON_VERSION}-${PYTHON_SLIM_TAG} AS builder
 
-# build-essential / g++ for any C extension wheels uv may need to build
-# from source. curl + ca-certificates are required by the rustup
-# bootstrap below. patchelf for maturin's wheel-link repair on linux.
-# No OpenSSL system deps required: the rustls-everywhere refactor
-# eliminated `openssl-sys` from our build tree by switching fastembed
-# to `hf-hub-rustls-tls` + `ort-download-binaries-rustls-tls`.
-RUN apt-get update && \
-  apt-get install -y --no-install-recommends \
-    build-essential \
-    g++ \
-    curl \
-    ca-certificates \
-    patchelf \
-  && rm -rf /var/lib/apt/lists/*
+ARG RUST_VERSION
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
 
-RUN python -m pip install --no-cache-dir uv==${UV_VERSION}
+# Pass proxy env vars for all subsequent RUN steps
+ENV http_proxy=${HTTP_PROXY} \
+    https_proxy=${HTTPS_PROXY} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    no_proxy=${NO_PROXY}
 
-# Rust toolchain for the headroom._core extension. With single-wheel
-# architecture (post-#355), `pip install -e .` invokes maturin via
-# pyproject.toml's [build-system], which calls cargo. No more separate
-# headroom-core-py package.
-ENV CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:${PATH}
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal -c rustfmt -c clippy --default-toolchain 1.95.0
+# System build dependencies + corporate CA cert
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        libssl-dev \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install corporate CA so curl/rustup/pip trust the TLS-intercepting proxy
+COPY cert.crt /usr/local/share/ca-certificates/corporate.crt
+RUN update-ca-certificates
+
+# Point cargo, pip, uv, and SSL at the system CA bundle (which now includes
+# the corporate Zscaler cert registered above by update-ca-certificates).
+ENV CARGO_HTTP_CAINFO=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    UV_NATIVE_TLS=1
+
+# Install Rust toolchain (pinned to match rust-toolchain.toml).
+# CARGO_HTTP_PROXY tells cargo/rustup to route through the corporate proxy.
+RUN CARGO_HTTP_PROXY="${HTTPS_PROXY:-${HTTP_PROXY}}" \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain "${RUST_VERSION}" --profile minimal && \
+    . "$HOME/.cargo/env" && \
+    rustup component add rustfmt
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install uv (fast pip replacement) and maturin
+RUN pip install --no-cache-dir --cert /etc/ssl/certs/ca-certificates.crt uv maturin
 
 WORKDIR /build
 
-# Copy the full set of files maturin needs to build the wheel: the root
-# pyproject.toml + Cargo workspace + Rust crates + Python source. The
-# uv install builds + installs the wheel in one shot.
-COPY pyproject.toml uv.lock README.md ./
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# Copy only what's needed for the Rust + Python build
+COPY pyproject.toml Cargo.toml Cargo.lock rust-toolchain.toml README.md ./
 COPY crates/ crates/
 COPY headroom/ headroom/
 
-ARG HEADROOM_EXTRAS=proxy,code
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/build/target \
-    uv pip install --system ".[${HEADROOM_EXTRAS}]"
+# Build and install headroom with the Bedrock proxy extras into an isolated venv.
+# The maturin build-backend compiles _core.so and bundles it into the wheel.
+# ORT_STRATEGY=load-dynamic (set above) skips the cdn.pyke.io prebuilt binary
+# download; _core.so instead dlopen()s libonnxruntime at runtime from the path
+# set by ORT_DYLIB_PATH.
+RUN uv venv /opt/headroom-venv && \
+    . /opt/headroom-venv/bin/activate && \
+    maturin develop --release && \
+    uv pip install ".[proxy,code,bedrock]" && \
+    # Create a stable versioned symlink so ORT_DYLIB_PATH doesn't need the
+    # exact patch version at image build time.
+    ln -sf \
+        "$(find /opt/headroom-venv -name 'libonnxruntime.so.*' | head -1)" \
+        /opt/headroom-venv/lib/libonnxruntime.so
 
-# Build-stage smoke check: verify the extension loads end-to-end inside
-# the build image before we copy site-packages into the runtime image.
-# If this fails, the runtime image would fail Phase A0's fail-loud
-# startup check on every restart. Run from /tmp so cwd doesn't shadow
-# site-packages with /build/headroom/ (which has no _core.so since
-# maturin installed the .so into site-packages).
-RUN cd /tmp && python -c "from headroom._core import DiffCompressor, SmartCrusher; \
-    print(f'build-stage rust core verify OK: {DiffCompressor.__name__}, {SmartCrusher.__name__}')"
+# Smoke-test the compiled extension
+RUN /opt/headroom-venv/bin/python -c \
+    "from headroom._core import SmartCrusher, DiffCompressor; print('_core OK')"
 
-# Build the native Rust reverse proxy binary and stage it for the runtime
-# images (issue #976). These images already run "the proxy"; bundling the
-# native `headroom-proxy` binary lets operators front the Python proxy with
-# the Rust SigV4 / live-zone compression path from the same image. The
-# binary is copied out of the cache-mounted target dir into a persistent
-# path so the COPY in the runtime stages can pick it up.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --release --locked --bin headroom-proxy && \
-    cp target/release/headroom-proxy /usr/local/bin/headroom-proxy
+# ---------------------------------------------------------------------------
+# Stage 2: runtime
+# Minimal slim image — copies only the installed site-packages and the
+# headroom source tree. No compiler, no Rust.
+# ---------------------------------------------------------------------------
+FROM --platform=linux/amd64 python:${PYTHON_VERSION}-${PYTHON_SLIM_TAG} AS runtime
 
-# ---- Runtime stage (python-slim): supports root/nonroot via build arg ----
-FROM python:${PYTHON_VERSION}-slim AS runtime-slim-base
+# Runtime system dependencies (tree-sitter needs libstdc++; botocore-crt needs libssl)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libstdc++6 \
+        libssl3 \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-ARG RUNTIME_USER=nonroot
-ARG RUNTIME_HOME=/home/nonroot
-ARG PYTHON_SITE_PACKAGES
+# Copy the fully-built Python environment from the builder stage
+COPY --from=builder /opt/headroom-venv /opt/headroom-venv
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+# Use the venv's Python and headroom console script
+ENV PATH="/opt/headroom-venv/bin:${PATH}" \
+    # At runtime, point ort's dynamic loader at the onnxruntime shared library
+    # shipped inside the Python onnxruntime wheel (stable symlink created above).
+    ORT_DYLIB_PATH="/opt/headroom-venv/lib/libonnxruntime.so"
 
-COPY --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
-COPY --from=builder /usr/local/bin/headroom /usr/local/bin/headroom
-# Native Rust reverse proxy binary (issue #976).
-COPY --from=builder /usr/local/bin/headroom-proxy /usr/local/bin/headroom-proxy
+# ---------------------------------------------------------------------------
+# Non-root user
+# ---------------------------------------------------------------------------
+RUN useradd -r -u 1000 -m headroom && \
+    mkdir -p /data /home/headroom/.headroom && \
+    chown -R headroom:headroom /data /home/headroom
+USER headroom
 
-RUN mkdir -p /home/nonroot /data && \
-    if [ "$RUNTIME_USER" = "nonroot" ]; then \
-      groupadd --gid 1000 nonroot && \
-      useradd --uid 1000 --gid nonroot --create-home nonroot && \
-      mkdir -p /home/nonroot/.headroom && \
-      chown -R nonroot:nonroot /data /home/nonroot; \
-    else \
-      mkdir -p /root/.headroom; \
-    fi
-
-USER ${RUNTIME_USER}
-WORKDIR ${RUNTIME_HOME}
-
-ENV HEADROOM_HOST=0.0.0.0 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Declare ~/.headroom as a volume so Docker (and ACA) can attach persistent
-# storage here.  Bare `docker run` gets an anonymous volume as a fallback so
-# state is never silently written to the ephemeral container layer.
-# RUNTIME_HOME defaults to /home/nonroot (the published image default); pass
-# --build-arg RUNTIME_HOME=/root when building with RUNTIME_USER=root.
-VOLUME ${RUNTIME_HOME}/.headroom
+# ---------------------------------------------------------------------------
+# Environment — AWS Bedrock placeholders
+# Override these at runtime via -e flags or IAM instance profile / task role.
+# ---------------------------------------------------------------------------
+ENV HEADROOM_HOST="0.0.0.0" \
+    HEADROOM_PORT="8787" \
+    HEADROOM_BACKEND="bedrock" \
+    # AWS region — set to your Bedrock-enabled region.
+    # Can also be provided via AWS_REGION (standard AWS env var).
+    AWS_REGION="us-east-1" \
+    # Credential placeholders — leave unset when using IAM instance profile
+    # or ECS task role (recommended for production).
+    AWS_ACCESS_KEY_ID="" \
+    AWS_SECRET_ACCESS_KEY="" \
+    AWS_SESSION_TOKEN="" \
+    AWS_PROFILE=""
 
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8787/readyz || exit 1
 
 ENTRYPOINT ["headroom", "proxy"]
-CMD ["--host", "0.0.0.0", "--port", "8787"]
-
-FROM ${DISTROLESS_IMAGE} AS runtime-slim
-
-ARG RUNTIME_USER=nonroot
-ARG PYTHON_SITE_PACKAGES
-
-COPY --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
-# Native Rust reverse proxy binary (issue #976).
-COPY --from=builder /usr/local/bin/headroom-proxy /usr/local/bin/headroom-proxy
-
-USER ${RUNTIME_USER}
-WORKDIR /app
-
-ENV HEADROOM_HOST=0.0.0.0 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=${PYTHON_SITE_PACKAGES}
-
-EXPOSE 8787
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=5)"]
-
-ENTRYPOINT ["python3", "-m", "headroom.cli", "proxy"]
-CMD ["--host", "0.0.0.0", "--port", "8787"]
-
-# Default published image remains python-slim runtime
-FROM runtime-slim-base AS runtime
+CMD ["--host", "0.0.0.0", "--port", "8787", "--backend", "bedrock"]
