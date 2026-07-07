@@ -4,15 +4,15 @@
 # REQUIREMENTS
 #   - Docker Desktop with host-networking support (host.docker.internal resolves)
 #   - aws-sso CLI on the host (brew install aws-sso-cli or equivalent)
-#   - Active SSO session for dg-productivity-prod:claude-common
-#   - Corporate TLS proxy at localhost:3128 (Zscaler / Charles / etc.)
+#   - Active SSO session (see RUNNING.md for login instructions)
+#   - Corporate TLS proxy at localhost:3128 (optional — remove if not needed)
 #
 # FIRST-TIME BUILD  (only needed once, or after source changes)
-#   eval "$(aws-sso eval --profile=dg-productivity-prod:claude-common)"
+#   eval "$(aws-sso eval --profile=<sso-profile>)"
 #   docker compose -f docker-compose.bedrock.yml build
 #
 # DAILY START  (credentials are temporary — repeat when SSO session expires)
-#   eval "$(aws-sso eval --profile=dg-productivity-prod:claude-common)" && \
+#   eval "$(aws-sso eval --profile=<sso-profile>)" && \
 #     docker compose -f docker-compose.bedrock.yml up --force-recreate -d
 #
 # STOP
@@ -27,10 +27,8 @@
 #   # then restart with the DAILY START command above
 #
 # USE WITH CLAUDE CODE
-#   # The project settings in /Users/mhaitana/Work/temp/.claude/settings.json already
-#   # set ANTHROPIC_BASE_URL=http://localhost:8787, ANTHROPIC_API_KEY=headroom,
-#   # and CLAUDE_CODE_USE_BEDROCK=0, so just launch Claude Code from that directory:
-#   cd /Users/mhaitana/Work/temp && claude
+#   Set ANTHROPIC_BASE_URL=http://localhost:8787 and CLAUDE_CODE_USE_BEDROCK=0
+#   in your project's .claude/settings.json — see RUNNING.md for the full snippet.
 #
 # HOW IT WORKS
 #   - AWS credentials are injected as env vars (AWS_ACCESS_KEY_ID / SECRET / TOKEN)
@@ -56,11 +54,11 @@ services:
       args:
         HEADROOM_EXTRAS: proxy,code,bedrock
         PYTHON_SLIM_TAG: slim-bookworm
-        HTTP_PROXY: http://http.docker.internal:3128
-        HTTPS_PROXY: http://http.docker.internal:3128
-        http_proxy: http://http.docker.internal:3128
-        https_proxy: http://http.docker.internal:3128
-        NO_PROXY: localhost,127.0.0.1,cdn.pyke.io,pyke.io,huggingface.co,hf.co
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        http_proxy: ""
+        https_proxy: ""
+        NO_PROXY: ""
     restart: unless-stopped
     environment:
       HOME: /tmp/headroom-home
